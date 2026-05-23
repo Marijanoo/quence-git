@@ -24,7 +24,7 @@ jobs:
       - name: Build & publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npm run build:electron && electron-builder --win --publish always
+        run: npm run build && npm run build:electron && npx electron-builder --win --publish always
 
   release-mac:
     runs-on: macos-latest
@@ -41,4 +41,4 @@ jobs:
       - name: Build & publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npm run build:electron && electron-builder --mac --publish always
+        run: npm run build && npm run build:electron && npx electron-builder --mac --publish always
