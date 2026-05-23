@@ -65,6 +65,19 @@ declare global {
         checkRepoName: (token: string, name: string) => Promise<{ available: boolean }>
         repoExists:    (token: string, repoUrl: string) => Promise<{ exists: boolean }>
         createRepo:    (token: string, name: string, description: string, isPrivate: boolean) => Promise<{ ok: boolean; cloneUrl?: string; htmlUrl?: string; fullName?: string; error?: string }>
+        listPrs:      (token: string, repoUrl: string, state: 'open' | 'closed' | 'all') => Promise<{ ok: boolean; prs: GitHubPR[] }>
+        getPr:        (token: string, repoUrl: string, number: number) => Promise<{ ok: boolean; pr?: GitHubPR }>
+        getPrDiff:    (token: string, repoUrl: string, number: number) => Promise<{ ok: boolean; files: GitHubPRFile[] }>
+        getPrComments:(token: string, repoUrl: string, number: number) => Promise<{ ok: boolean; comments: GitHubComment[] }>
+        addComment:   (token: string, repoUrl: string, number: number, body: string) => Promise<{ ok: boolean }>
+        createPr:     (token: string, repoUrl: string, title: string, body: string, head: string, base: string, draft: boolean) => Promise<{ ok: boolean; number?: number; htmlUrl?: string; error?: string }>
+        mergePr:      (token: string, repoUrl: string, number: number, method: 'merge' | 'squash' | 'rebase') => Promise<{ ok: boolean }>
+        closePr:      (token: string, repoUrl: string, number: number) => Promise<{ ok: boolean }>
+        reopenPr:          (token: string, repoUrl: string, number: number) => Promise<{ ok: boolean }>
+        listWorkflowRuns:  (token: string, repoUrl: string, branch?: string) => Promise<{ ok: boolean; runs: GitHubWorkflowRun[] }>
+        getWorkflowRunJobs:(token: string, repoUrl: string, runId: number) => Promise<{ ok: boolean; jobs: GitHubWorkflowJob[] }>
+        rerunWorkflow:     (token: string, repoUrl: string, runId: number) => Promise<{ ok: boolean }>
+        getJobLogs:        (token: string, repoUrl: string, jobId: number) => Promise<{ ok: boolean; logs: string }>
       }
 
       store: {
@@ -118,5 +131,71 @@ declare global {
     date: string
     message: string
     refs: string
+  }
+
+  interface GitHubPR {
+    number: number
+    title: string
+    body: string
+    state: 'open' | 'closed'
+    draft: boolean
+    merged: boolean
+    mergedAt?: string | null
+    mergeable?: boolean | null
+    mergeableState?: string
+    author: { login: string; avatarUrl: string }
+    head: { ref: string; sha: string; repoCloneUrl?: string }
+    base: { ref: string }
+    createdAt: string
+    updatedAt: string
+    labels: { name: string; color: string }[]
+    reviews?: { author: string; state: string; submittedAt: string }[]
+    checkRuns?: { name: string; status: string; conclusion: string | null; htmlUrl: string }[]
+    comments: number
+    htmlUrl: string
+  }
+
+  interface GitHubPRFile {
+    filename: string
+    status: string
+    additions: number
+    deletions: number
+    patch: string
+  }
+
+  interface GitHubComment {
+    id: number
+    author: { login: string; avatarUrl: string }
+    body: string
+    createdAt: string
+  }
+
+  interface GitHubWorkflowRun {
+    id: number
+    name: string
+    displayTitle: string
+    status: string
+    conclusion: string | null
+    event: string
+    branch: string
+    sha: string
+    commitMessage: string
+    actor: { login: string; avatarUrl: string }
+    createdAt: string
+    updatedAt: string
+    runNumber: number
+    htmlUrl: string
+    workflowId: number
+  }
+
+  interface GitHubWorkflowJob {
+    id: number
+    name: string
+    status: string
+    conclusion: string | null
+    startedAt: string | null
+    completedAt: string | null
+    htmlUrl: string
+    steps: { name: string; status: string; conclusion: string | null; number: number; startedAt: string | null; completedAt: string | null }[]
   }
 }
