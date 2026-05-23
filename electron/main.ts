@@ -356,7 +356,7 @@ app.on('ready', () => {
   // ── Push / pull / fetch ──────────────────────────────────────────────────
 
   ipcMain.handle('git:push', async (_e, { repoPath, remote, branch }: { repoPath: string; remote: string; branch: string }) => {
-    const r = await git(['push', remote, branch], repoPath)
+    const r = await git(['push', '--set-upstream', remote, branch], repoPath)
     return { ok: r.code === 0, stderr: r.stderr }
   })
 
