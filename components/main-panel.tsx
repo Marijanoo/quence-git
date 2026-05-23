@@ -11,10 +11,12 @@ interface MainPanelProps {
   refreshKey: number
   onRefresh: () => void
   branch: string
+  aheadBy: number
+  behindBy: number
   githubAccount?: GitHubAccount | null
 }
 
-export function MainPanel({ repoPath, repoName, activeView, refreshKey, onRefresh, branch, githubAccount }: MainPanelProps) {
+export function MainPanel({ repoPath, repoName, activeView, refreshKey, onRefresh, branch, aheadBy, behindBy, githubAccount }: MainPanelProps) {
   return (
     <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
       {activeView === 'changes' ? (
@@ -24,6 +26,8 @@ export function MainPanel({ repoPath, repoName, activeView, refreshKey, onRefres
           refreshKey={refreshKey}
           onRefresh={onRefresh}
           branch={branch}
+          aheadBy={aheadBy}
+          behindBy={behindBy}
           githubAccount={githubAccount}
         />
       ) : (

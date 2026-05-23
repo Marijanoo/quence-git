@@ -13,6 +13,8 @@ interface ChangesViewProps {
   refreshKey: number
   onRefresh: () => void
   branch: string
+  aheadBy: number
+  behindBy: number
   githubAccount?: GitHubAccount | null
 }
 
@@ -47,7 +49,7 @@ function rowHeight(file: GitFile) {
   return file.path.includes('/') ? ROW_H_DIR : ROW_H
 }
 
-export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch, githubAccount }: ChangesViewProps) {
+export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch, aheadBy, behindBy, githubAccount }: ChangesViewProps) {
   const [files, setFiles] = useState<GitFile[]>([])
   const [selectedFile, setSelectedFile] = useState<GitFile | null>(null)
   const [loading, setLoading] = useState(true)
@@ -300,7 +302,7 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
                 className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40"
               >
                 {pulling ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowDown className="h-3 w-3" />}
-                Pull
+                Pull{behindBy > 0 ? ` (${behindBy})` : ''}
               </button>
               <button
                 onClick={handlePush}
@@ -308,7 +310,7 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
                 className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40"
               >
                 {pushing ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowUp className="h-3 w-3" />}
-                Push
+                Push{aheadBy > 0 ? ` (${aheadBy})` : ''}
               </button>
             </div>
           )}

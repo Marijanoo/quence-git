@@ -424,6 +424,8 @@ export default function Home() {
               refreshKey={refreshKey}
               onRefresh={refresh}
               branch={branch}
+              aheadBy={aheadBy}
+              behindBy={behindBy}
               githubAccount={githubUser}
             />
             <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
