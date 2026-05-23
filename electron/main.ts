@@ -62,7 +62,7 @@ function git(args: string[], cwd: string): Promise<{ stdout: string; stderr: str
 
 function gitSync(args: string[], cwd: string): string {
   try {
-    return cp.execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim()
+    return cp.execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
   } catch {
     return ''
   }
@@ -480,8 +480,28 @@ app.on('ready', () => {
     const remote = gitSync(['remote', 'get-url', 'origin'], repoPath)
     const detached = branch === 'HEAD'
     const upstream = detached ? '' : gitSync(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], repoPath)
-    const ahead  = upstream ? gitSync(['rev-list', `${upstream}..HEAD`, '--count'], repoPath) : ''
-    const behind = upstream ? gitSync(['rev-list', `HEAD..${upstream}`, '--count'], repoPath) : ''
+    let ahead = ''
+    let behind = ''
+    if (upstream) {
+      ahead  = gitSync(['rev-list', `${upstream}..HEAD`, '--count'], repoPath)
+      behind = gitSync(['rev-list', `HEAD..${upstream}`, '--count'], repoPath)
+    } else if (remote && !detached) {
+      // no upstream set yet — count all local commits not on the remote as "ahead"
+      const remoteName = gitSync(['remote'], repoPath).split('\n')[0]?.trim()
+      if (remoteName) {
+        const remoteBranch = gitSync(['ls-remote', '--symref', remoteName, 'HEAD'], repoPath)
+        const m = remoteBranch.match(/refs\/heads\/(\S+)/)
+        const defaultBranch = m ? m[1] : 'main'
+        const remoteRef = `${remoteName}/${defaultBranch}`
+        const hasRemoteRef = gitSync(['rev-parse', '--verify', remoteRef], repoPath)
+        if (hasRemoteRef) {
+          ahead = gitSync(['rev-list', `${remoteRef}..HEAD`, '--count'], repoPath)
+        } else {
+          // remote exists but nothing pushed yet — count all commits
+          ahead = gitSync(['rev-list', 'HEAD', '--count'], repoPath)
+        }
+      }
+    }
     return {
       branch: detached ? gitSync(['rev-parse', '--short', 'HEAD'], repoPath) : branch,
       remote,

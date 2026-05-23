@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { getHighlighter, langFromPath, highlightLine, type HighlightedToken } from '@/lib/highlighter'
 import type { Highlighter } from 'shiki'
@@ -62,11 +62,21 @@ interface DiffRendererProps {
   filePath: string
 }
 
+const CHAR_W = 7.2  // approximate px width per monospace char at text-xs
+const GUTTER_W = 96 // line numbers (2×40px) + prefix (16px)
+
+function calcMinWidth(lines: DiffLine[]): number {
+  let max = 0
+  for (const l of lines) { if (l.content.length > max) max = l.content.length }
+  return GUTTER_W + max * CHAR_W
+}
+
 export function DiffRenderer({ lines, filePath }: DiffRendererProps) {
   const lang = langFromPath(filePath)
   const [tokenMap, setTokenMap] = useState<Map<number, HighlightedToken[]>>(new Map())
   const cacheKey = useRef('')
   const parentRef = useRef<HTMLDivElement>(null)
+  const minWidth = useMemo(() => calcMinWidth(lines), [lines])
 
   const virt = useVirtualizer({
     count: lines.length,
@@ -83,20 +93,20 @@ export function DiffRenderer({ lines, filePath }: DiffRendererProps) {
   }, [lines, filePath, lang])
 
   return (
-    <div ref={parentRef} className="h-full overflow-auto min-w-0 font-mono text-xs" style={{ background: '#282c34' }}>
-      <div style={{ height: virt.getTotalSize(), position: 'relative' }}>
+    <div ref={parentRef} className="h-full overflow-auto font-mono text-xs" style={{ background: '#282c34' }}>
+      <div style={{ height: virt.getTotalSize(), position: 'relative', minWidth }}>
         {virt.getVirtualItems().map(row => {
           const line = lines[row.index]
 
           if (line.type === 'header') return (
-            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, right: 0, height: LINE_H }}
+            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, height: LINE_H, minWidth: '100%' }}
               className="text-muted-foreground/40 px-2 border-b border-border/30 whitespace-pre select-none leading-5">
               {line.content}
             </div>
           )
 
           if (line.type === 'hunk') return (
-            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, right: 0, height: LINE_H }}
+            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, height: LINE_H, minWidth: '100%' }}
               className="flex items-center px-2 bg-accent/5 text-accent/60 border-y border-border/20 select-none leading-5">
               <span className="whitespace-pre">{line.content}</span>
             </div>
@@ -113,7 +123,7 @@ export function DiffRenderer({ lines, filePath }: DiffRendererProps) {
           const tokens = tokenMap.get(row.index)
 
           return (
-            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, right: 0, height: LINE_H, background: bg }}
+            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, height: LINE_H, minWidth: '100%', background: bg }}
               className="flex hover:brightness-110 transition-[filter]">
               <span className="w-10 text-right pr-2 text-muted-foreground/25 shrink-0 select-none leading-5">
                 {line.type !== 'added' ? line.oldLine : ''}
@@ -122,7 +132,7 @@ export function DiffRenderer({ lines, filePath }: DiffRendererProps) {
                 {line.type !== 'removed' ? line.newLine : ''}
               </span>
               <span className="w-4 shrink-0 select-none leading-5" style={{ color: prefixColor }}>{prefix}</span>
-              <span className="flex-1 whitespace-pre px-1 selectable leading-5 overflow-hidden">
+              <span className="whitespace-pre px-1 selectable leading-5">
                 {tokens && tokens.length > 0
                   ? tokens.map((t, ti) => <span key={ti} style={{ color: t.color }}>{t.content}</span>)
                   : line.content
@@ -147,6 +157,11 @@ export function UntrackedRenderer({ content, filePath }: UntrackedRendererProps)
   const parentRef = useRef<HTMLDivElement>(null)
 
   const srcLines = content.split('\n')
+  const minWidth = useMemo(() => {
+    let max = 0
+    for (const l of srcLines) { if (l.length > max) max = l.length }
+    return GUTTER_W + max * CHAR_W
+  }, [content])
 
   const virt = useVirtualizer({
     count: srcLines.length,
@@ -163,17 +178,17 @@ export function UntrackedRenderer({ content, filePath }: UntrackedRendererProps)
   }, [content, filePath, lang])
 
   return (
-    <div ref={parentRef} className="h-full overflow-auto min-w-0 font-mono text-xs" style={{ background: '#282c34' }}>
-      <div style={{ height: virt.getTotalSize(), position: 'relative' }}>
+    <div ref={parentRef} className="h-full overflow-auto font-mono text-xs" style={{ background: '#282c34' }}>
+      <div style={{ height: virt.getTotalSize(), position: 'relative', minWidth }}>
         {virt.getVirtualItems().map(row => {
           const line = srcLines[row.index]
           return (
-            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, right: 0, height: LINE_H, background: 'var(--diff-added-bg)' }}
+            <div key={row.index} style={{ position: 'absolute', top: row.start, left: 0, height: LINE_H, minWidth: '100%', background: 'var(--diff-added-bg)' }}
               className="flex">
               <span className="w-10 text-right pr-2 text-muted-foreground/25 shrink-0 select-none leading-5">{row.index + 1}</span>
               <span className="w-10 text-right pr-2 text-muted-foreground/25 shrink-0 select-none leading-5">{row.index + 1}</span>
               <span className="w-4 shrink-0 select-none leading-5" style={{ color: '#4ec94e' }}>+</span>
-              <span className="flex-1 whitespace-pre px-1 selectable leading-5">
+              <span className="whitespace-pre px-1 selectable leading-5">
                 {tokenLines[row.index]
                   ? tokenLines[row.index].map((t, ti) => <span key={ti} style={{ color: t.color }}>{t.content}</span>)
                   : line
