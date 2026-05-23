@@ -50,6 +50,11 @@ declare global {
         writeGitignore: (path: string, patterns: string[]) => Promise<{ ok: boolean }>
         addRemote:      (path: string, name: string, url: string) => Promise<{ ok: boolean; stderr: string }>
 
+        stash:     (path: string, message?: string) => Promise<{ ok: boolean; stderr: string }>
+        stashList: (path: string) => Promise<{ ok: boolean; stashes: GitStash[] }>
+        stashPop:  (path: string, ref: string) => Promise<{ ok: boolean; stderr: string }>
+        stashDrop: (path: string, ref: string) => Promise<{ ok: boolean; stderr: string }>
+
         log: (path: string, limit?: number) => Promise<{ ok: boolean; commits: GitCommit[] }>
         show: (path: string, hash: string) => Promise<{ ok: boolean; diff: string; stat: string; body: string }>
         showFiles: (path: string, hash: string) => Promise<{ ok: boolean; files: { status: string; path: string }[] }>
@@ -121,6 +126,12 @@ declare global {
     email: string
     avatarUrl: string
     token: string
+  }
+
+  interface GitStash {
+    ref: string
+    message: string
+    date: string
   }
 
   interface GitCommit {

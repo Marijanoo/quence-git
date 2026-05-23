@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { FilePlus, FileMinus, FileEdit, FileDiff, FileX, CheckSquare, Square, RotateCcw, ArrowUp, ArrowDown, Loader2, Upload } from 'lucide-react'
+import { FilePlus, FileMinus, FileEdit, FileDiff, FileX, CheckSquare, Square, RotateCcw, ArrowUp, ArrowDown, Loader2, Upload, Archive, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { DiffViewer } from '@/components/diff-viewer'
 import { PublishDialog } from '@/components/publish-dialog'
@@ -59,7 +59,10 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
   const [pushing, setPushing] = useState(false)
   const [pulling, setPulling] = useState(false)
   const [hasRemote, setHasRemote] = useState<boolean | null>(null)
+  const [hasAccess, setHasAccess] = useState(true)
   const [publishOpen, setPublishOpen] = useState(false)
+  const [stashes, setStashes] = useState<GitStash[]>([])
+  const [stashesOpen, setStashesOpen] = useState(false)
 
   const stagedParentRef = useRef<HTMLDivElement>(null)
   const unstagedParentRef = useRef<HTMLDivElement>(null)
@@ -74,19 +77,24 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
     setLoading(false)
   }, [repoPath])
 
-  useEffect(() => { loadStatus(true) }, [loadStatus, refreshKey])
+  const loadStashes = useCallback(async () => {
+    const r = await window.electronAPI?.git.stashList(repoPath)
+    if (r?.ok) setStashes(r.stashes)
+  }, [repoPath])
+
+  useEffect(() => { loadStatus(true); loadStashes() }, [loadStatus, loadStashes, refreshKey])
 
   useEffect(() => {
     async function checkRemote() {
       const r = await window.electronAPI?.git.remotes(repoPath)
-      if (!r?.ok || r.remotes.length === 0) { setHasRemote(false); return }
-      // if we have a token, verify the remote repo actually exists on GitHub
+      if (!r?.ok || r.remotes.length === 0) { setHasRemote(false); setHasAccess(true); return }
       const url = r.remotes[0]?.url
+      setHasRemote(true)
       if (url && githubAccount?.token && url.includes('github.com')) {
         const exists = await window.electronAPI?.github.repoExists(githubAccount.token, url)
-        setHasRemote(exists?.exists ?? true)
+        setHasAccess(exists?.exists ?? true)
       } else {
-        setHasRemote(true)
+        setHasAccess(true)
       }
     }
     checkRemote()
@@ -137,6 +145,18 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
     const r = await window.electronAPI?.git.discard(repoPath, [f.path])
     if (r?.ok) { toast.success(`Discarded ${f.path}`); loadStatus(); onRefresh() }
     else toast.error('Discard failed')
+  }
+
+  async function handleStashPop(ref: string) {
+    const r = await window.electronAPI?.git.stashPop(repoPath, ref)
+    if (r?.ok) { toast.success('Stash applied'); loadStatus(); loadStashes(); onRefresh() }
+    else toast.error(r?.stderr ?? 'Failed to apply stash')
+  }
+
+  async function handleStashDrop(ref: string) {
+    const r = await window.electronAPI?.git.stashDrop(repoPath, ref)
+    if (r?.ok) { toast.success('Stash dropped'); loadStashes() }
+    else toast.error(r?.stderr ?? 'Failed to drop stash')
   }
 
   async function handleCommit() {
@@ -260,6 +280,47 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
           </div>
         </div>
 
+        {/* Stashes */}
+        {stashes.length > 0 && (
+          <div className="border-t border-border shrink-0">
+            <button
+              onClick={() => setStashesOpen(o => !o)}
+              className="flex items-center justify-between w-full px-3 h-8 hover:bg-secondary/40 transition-colors"
+            >
+              <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                <Archive className="h-3 w-3" />
+                Stashes ({stashes.length})
+              </span>
+              {stashesOpen ? <ChevronDown className="h-3 w-3 text-muted-foreground/50" /> : <ChevronRight className="h-3 w-3 text-muted-foreground/50" />}
+            </button>
+            {stashesOpen && stashes.map(s => (
+              <div key={s.ref} className="flex items-center gap-2 px-3 py-2 border-t border-border/40 group hover:bg-secondary/30 transition-colors">
+                <Archive className="h-3 w-3 text-muted-foreground/40 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-foreground truncate">{s.message.replace(/^On \S+: /, '')}</p>
+                  <p className="text-[10px] text-muted-foreground/40">{s.ref}</p>
+                </div>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <button
+                    onClick={() => handleStashPop(s.ref)}
+                    title="Apply stash"
+                    className="px-1.5 h-5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  >
+                    Apply
+                  </button>
+                  <button
+                    onClick={() => handleStashDrop(s.ref)}
+                    title="Drop stash"
+                    className="text-muted-foreground/40 hover:text-destructive transition-colors p-0.5"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Commit composer */}
         <div className="border-t border-border shrink-0 p-3 space-y-2">
           <input
@@ -298,16 +359,18 @@ export function ChangesView({ repoPath, repoName, refreshKey, onRefresh, branch,
             <div className="flex gap-2">
               <button
                 onClick={handlePull}
-                disabled={pulling}
-                className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40"
+                disabled={pulling || !hasAccess}
+                title={!hasAccess ? 'Current account doesn\'t have access to this repository' : undefined}
+                className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {pulling ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowDown className="h-3 w-3" />}
                 Pull{behindBy > 0 ? ` (${behindBy})` : ''}
               </button>
               <button
                 onClick={handlePush}
-                disabled={pushing}
-                className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40"
+                disabled={pushing || !hasAccess}
+                title={!hasAccess ? 'Current account doesn\'t have access to this repository' : undefined}
+                className="flex-1 h-7 rounded-md bg-secondary text-secondary-foreground text-xs hover:bg-secondary/80 transition-colors flex items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {pushing ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowUp className="h-3 w-3" />}
                 Push{aheadBy > 0 ? ` (${aheadBy})` : ''}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Minus, Square, X, Settings2, GitBranch, RefreshCw, ArrowUp, ArrowDown, LogOut, Github, FolderOpen, ChevronDown, Plus, Trash2, Check, GitCommitHorizontal, History } from 'lucide-react'
+import { Minus, Square, X, Settings2, GitBranch, RefreshCw, ArrowUp, ArrowDown, LogOut, Github, FolderOpen, ChevronDown, Plus, Trash2, Check, GitCommitHorizontal, History, Archive } from 'lucide-react'
 import Image from 'next/image'
 import { UpdateBar } from '@/components/update-bar'
 import { SettingsPanel, applySettings, DEFAULTS } from '@/components/settings-panel'
@@ -30,6 +30,10 @@ export default function Home() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [isFetching, setIsFetching] = useState(false)
   const [autoFetch, setAutoFetch] = useState(false)
+  const [hasRepoAccess, setHasRepoAccess] = useState(true)
+  const [stashDialog, setStashDialog] = useState<{ targetBranch: string } | null>(null)
+  const [stashMsg, setStashMsg] = useState('')
+  const [stashing, setStashing] = useState(false)
   const [initializing, setInitializing] = useState(true)
   const [githubAccounts, setGithubAccounts] = useState<GitHubAccount[]>([])
   const [activeAccount, setActiveAccount] = useState<string | null>(null) // login
@@ -220,6 +224,16 @@ export default function Home() {
     setSwitchingToRepo(null)
   }, [loadRepoInfo])
 
+  useEffect(() => {
+    if (!repoUrl || !githubUser?.token || !repoUrl.includes('github.com')) {
+      setHasRepoAccess(true)
+      return
+    }
+    window.electronAPI?.github.repoExists(githubUser.token, repoUrl).then(r => {
+      setHasRepoAccess(r?.exists ?? true)
+    })
+  }, [repoUrl, githubUser?.token])
+
   const refresh = useCallback(() => {
     setRefreshKey(k => k + 1)
     if (repoPath) loadRepoInfo(repoPath)
@@ -246,9 +260,33 @@ export default function Home() {
 
   async function handleCheckoutBranch(name: string) {
     if (!repoPath || name === branch) return
+    const status = await window.electronAPI?.git.status(repoPath)
+    const dirty = status?.ok && status.files.length > 0
+    if (dirty) {
+      setStashDialog({ targetBranch: name })
+      setStashMsg('')
+      return
+    }
     const r = await window.electronAPI?.git.checkout(repoPath, name)
     if (r?.ok) { setBranchSwitcherOpen(false); refresh() }
     else toast.error(r?.stderr ?? 'Checkout failed')
+  }
+
+  async function handleStashAndCheckout() {
+    if (!repoPath || !stashDialog) return
+    setStashing(true)
+    const sr = await window.electronAPI?.git.stash(repoPath, stashMsg.trim() || undefined)
+    if (!sr?.ok) { toast.error(sr?.stderr ?? 'Stash failed'); setStashing(false); return }
+    const cr = await window.electronAPI?.git.checkout(repoPath, stashDialog.targetBranch)
+    setStashing(false)
+    if (cr?.ok) {
+      toast.success(`Stashed changes and switched to ${stashDialog.targetBranch}`)
+      setStashDialog(null)
+      setBranchSwitcherOpen(false)
+      refresh()
+    } else {
+      toast.error(cr?.stderr ?? 'Checkout failed')
+    }
   }
 
   function sanitizeBranchName(name: string): string {
@@ -467,17 +505,19 @@ export default function Home() {
             <div className="flex items-stretch">
               <button
                 onClick={handleFetch}
-                title="Fetch"
-                className="flex items-center justify-center h-full px-3 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                disabled={!hasRepoAccess}
+                title={!hasRepoAccess ? "Current account doesn't have access to this repository" : 'Fetch'}
+                className="flex items-center justify-center h-full px-3 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 tabIndex={-1}
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
               </button>
               <button
                 onClick={() => setAutoFetch(v => !v)}
-                title={autoFetch ? 'Auto-fetch on (every 15s) — click to disable' : 'Auto-fetch off — click to enable'}
-                className={`flex items-center justify-center h-full px-2 text-xs font-medium transition-colors border-l border-border ${
-                  autoFetch
+                disabled={!hasRepoAccess}
+                title={!hasRepoAccess ? "Current account doesn't have access to this repository" : autoFetch ? 'Auto-fetch on (every 15s) — click to disable' : 'Auto-fetch off — click to enable'}
+                className={`flex items-center justify-center h-full px-2 text-xs font-medium transition-colors border-l border-border disabled:opacity-40 disabled:cursor-not-allowed ${
+                  autoFetch && hasRepoAccess
                     ? 'text-accent hover:text-accent/80 hover:bg-secondary'
                     : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-secondary'
                 }`}
@@ -612,6 +652,45 @@ export default function Home() {
         onClose={() => setAddingAccount(false)}
         onAuth={handleAccountAdded}
       />
+
+      {/* Stash before checkout dialog */}
+      {stashDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-popover border border-border rounded-lg shadow-xl w-80 p-4 flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <Archive className="h-4 w-4 text-accent shrink-0" />
+              <p className="text-sm font-semibold text-foreground">Stash changes?</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              You have uncommitted changes. Stash them before switching to <code className="text-accent bg-accent/10 px-1 rounded">{stashDialog.targetBranch}</code>?
+            </p>
+            <input
+              autoFocus
+              value={stashMsg}
+              onChange={e => setStashMsg(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleStashAndCheckout(); if (e.key === 'Escape') setStashDialog(null) }}
+              placeholder="Stash message (optional)"
+              className="h-8 px-2 rounded-md bg-input border border-border text-xs text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-accent/50 transition-colors"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setStashDialog(null)}
+                className="px-3 h-7 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleStashAndCheckout}
+                disabled={stashing}
+                className="px-3 h-7 rounded text-xs bg-accent text-accent-foreground hover:bg-accent/90 transition-colors disabled:opacity-40 flex items-center gap-1.5"
+              >
+                {stashing && <Archive className="h-3 w-3 animate-pulse" />}
+                Stash &amp; Switch
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Repository switch overlay */}
       <div

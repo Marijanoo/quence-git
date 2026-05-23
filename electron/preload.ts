@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeGitignore:(p: string, patterns: string[]) => ipcRenderer.invoke('git:write-gitignore', { repoPath: p, patterns }),
     addRemote:     (p: string, name: string, url: string) => ipcRenderer.invoke('git:add-remote', { repoPath: p, name, url }),
 
+    stash:     (p: string, message?: string) => ipcRenderer.invoke('git:stash', { repoPath: p, message }),
+    stashList: (p: string) => ipcRenderer.invoke('git:stash-list', p),
+    stashPop:  (p: string, ref: string) => ipcRenderer.invoke('git:stash-pop', { repoPath: p, ref }),
+    stashDrop: (p: string, ref: string) => ipcRenderer.invoke('git:stash-drop', { repoPath: p, ref }),
+
     log:       (p: string, limit?: number) => ipcRenderer.invoke('git:log', { repoPath: p, limit }),
     show:      (p: string, hash: string) => ipcRenderer.invoke('git:show', { repoPath: p, hash }),
     showFiles: (p: string, hash: string) => ipcRenderer.invoke('git:show-files', { repoPath: p, hash }),

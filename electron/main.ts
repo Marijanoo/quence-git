@@ -353,6 +353,35 @@ app.on('ready', () => {
     return { ok: r.code === 0, stdout: r.stdout, stderr: r.stderr }
   })
 
+  // ── Stash ────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('git:stash', async (_e, { repoPath, message }: { repoPath: string; message?: string }) => {
+    const args = ['stash', 'push', '--include-untracked']
+    if (message) args.push('-m', message)
+    const r = await git(args, repoPath)
+    return { ok: r.code === 0, stderr: r.stderr }
+  })
+
+  ipcMain.handle('git:stash-list', async (_e, repoPath: string) => {
+    const r = await git(['stash', 'list', '--format=%gd|%s|%ci'], repoPath)
+    if (r.code !== 0) return { ok: false, stashes: [] }
+    const stashes = r.stdout.trim().split('\n').filter(Boolean).map(line => {
+      const [ref, message, date] = line.split('|')
+      return { ref: ref.trim(), message: message.trim(), date: date.trim() }
+    })
+    return { ok: true, stashes }
+  })
+
+  ipcMain.handle('git:stash-pop', async (_e, { repoPath, ref }: { repoPath: string; ref: string }) => {
+    const r = await git(['stash', 'pop', ref], repoPath)
+    return { ok: r.code === 0, stderr: r.stderr }
+  })
+
+  ipcMain.handle('git:stash-drop', async (_e, { repoPath, ref }: { repoPath: string; ref: string }) => {
+    const r = await git(['stash', 'drop', ref], repoPath)
+    return { ok: r.code === 0, stderr: r.stderr }
+  })
+
   // ── Push / pull / fetch ──────────────────────────────────────────────────
 
   ipcMain.handle('git:push', async (_e, { repoPath, remote, branch }: { repoPath: string; remote: string; branch: string }) => {
