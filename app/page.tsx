@@ -1,11 +1,10 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Minus, Square, X, Settings2, GitBranch, RefreshCw, ArrowUp, ArrowDown, LogOut, Github, FolderOpen, ChevronDown, Plus, Trash2 } from 'lucide-react'
+import { Minus, Square, X, Settings2, GitBranch, RefreshCw, ArrowUp, ArrowDown, LogOut, Github, FolderOpen, ChevronDown, Plus, Trash2, Check, GitCommitHorizontal, History } from 'lucide-react'
 import Image from 'next/image'
 import { UpdateBar } from '@/components/update-bar'
 import { SettingsPanel, applySettings, DEFAULTS } from '@/components/settings-panel'
-import { Sidebar } from '@/components/sidebar'
 import { MainPanel } from '@/components/main-panel'
 import { WelcomeScreen } from '@/components/welcome-screen'
 import { DeviceFlowDialog } from '@/components/device-flow-dialog'
@@ -14,7 +13,7 @@ import { toast } from 'sonner'
 
 const version = '0.1.0'
 
-export type ActiveView = 'changes' | 'history'
+export type ActiveView = 'changes' | 'history' | 'pull-requests' | 'actions'
 
 export default function Home() {
   const [updateProgress, setUpdateProgress] = useState<number | null>(null)
@@ -23,12 +22,14 @@ export default function Home() {
 
   const [repoPath, setRepoPath] = useState<string | null>(null)
   const [repoName, setRepoName] = useState('')
+  const [repoUrl, setRepoUrl] = useState('')
   const [branch, setBranch] = useState('')
   const [aheadBy, setAheadBy] = useState(0)
   const [behindBy, setBehindBy] = useState(0)
   const [activeView, setActiveView] = useState<ActiveView>('changes')
   const [refreshKey, setRefreshKey] = useState(0)
   const [isFetching, setIsFetching] = useState(false)
+  const [autoFetch, setAutoFetch] = useState(false)
   const [initializing, setInitializing] = useState(true)
   const [githubAccounts, setGithubAccounts] = useState<GitHubAccount[]>([])
   const [activeAccount, setActiveAccount] = useState<string | null>(null) // login
@@ -42,6 +43,12 @@ export default function Home() {
   const [githubSkipped, setGithubSkipped] = useState(false)
   const [switchingToRepo, setSwitchingToRepo] = useState<string | null>(null)
   const repoSwitcherRef = useRef<HTMLDivElement>(null)
+
+  const [branchSwitcherOpen, setBranchSwitcherOpen] = useState(false)
+  const [branches, setBranches] = useState<GitBranch[]>([])
+  const [creatingBranch, setCreatingBranch] = useState(false)
+  const [newBranchName, setNewBranchName] = useState('')
+  const branchSwitcherRef = useRef<HTMLDivElement>(null)
 
   const githubUser = githubAccounts.find(a => a.login === activeAccount) ?? githubAccounts[0] ?? null
 
@@ -92,8 +99,12 @@ export default function Home() {
         if (exists) {
           setRepoPath(last)
           setRepoName(name)
-          const info = await window.electronAPI?.git.repoInfo(last)
-          if (info) { setBranch(info.branch); setAheadBy(info.aheadBy); setBehindBy(info.behindBy) }
+          const [info, branchRes] = await Promise.all([
+            window.electronAPI?.git.repoInfo(last),
+            window.electronAPI?.git.branches(last),
+          ])
+          if (info) { setBranch(info.branch); setAheadBy(info.aheadBy); setBehindBy(info.behindBy); if (info.remote) setRepoUrl(info.remote) }
+          if (branchRes?.ok) setBranches(branchRes.branches)
         } else {
           toast.error(`Last repository no longer exists: ${name}`)
           await window.electronAPI?.store.delete('last-repo')
@@ -125,6 +136,15 @@ export default function Home() {
     const id = setTimeout(() => document.addEventListener('mousedown', handleClick), 0)
     return () => { clearTimeout(id); document.removeEventListener('mousedown', handleClick) }
   }, [repoSwitcherOpen])
+
+  useEffect(() => {
+    if (!branchSwitcherOpen) { setCreatingBranch(false); setNewBranchName(''); return }
+    function handleClick(e: MouseEvent) {
+      if (branchSwitcherRef.current && !branchSwitcherRef.current.contains(e.target as Node)) setBranchSwitcherOpen(false)
+    }
+    const id = setTimeout(() => document.addEventListener('mousedown', handleClick), 0)
+    return () => { clearTimeout(id); document.removeEventListener('mousedown', handleClick) }
+  }, [branchSwitcherOpen])
 
   async function saveAccounts(accounts: GitHubAccount[], active: string | null) {
     setGithubAccounts(accounts)
@@ -167,14 +187,21 @@ export default function Home() {
     toast.success(`Switched to ${user.login}`)
   }
 
+  const loadBranches = useCallback(async (path: string) => {
+    const r = await window.electronAPI?.git.branches(path)
+    if (r?.ok) setBranches(r.branches)
+  }, [])
+
   const loadRepoInfo = useCallback(async (path: string) => {
     const info = await window.electronAPI?.git.repoInfo(path)
     if (info) {
       setBranch(info.branch)
       setAheadBy(info.aheadBy)
       setBehindBy(info.behindBy)
+      if (info.remote) setRepoUrl(info.remote)
     }
-  }, [])
+    loadBranches(path)
+  }, [loadBranches])
 
   const openRepo = useCallback(async (path: string) => {
     const name = path.split(/[/\\]/).pop() ?? path
@@ -198,18 +225,58 @@ export default function Home() {
     if (repoPath) loadRepoInfo(repoPath)
   }, [repoPath, loadRepoInfo])
 
-  const handleFetch = useCallback(async () => {
+  const handleFetch = useCallback(async (silent = false) => {
     if (!repoPath) return
     setIsFetching(true)
     const r = await window.electronAPI?.git.fetch(repoPath)
     setIsFetching(false)
     if (r?.ok) {
-      toast.success('Fetched')
+      if (!silent) toast.success('Fetched')
       refresh()
     } else {
-      toast.error('Fetch failed')
+      if (!silent) toast.error('Fetch failed')
     }
   }, [repoPath, refresh])
+
+  useEffect(() => {
+    if (!autoFetch || !repoPath) return
+    const id = setInterval(() => handleFetch(true), 15000)
+    return () => clearInterval(id)
+  }, [autoFetch, repoPath, handleFetch])
+
+  async function handleCheckoutBranch(name: string) {
+    if (!repoPath || name === branch) return
+    const r = await window.electronAPI?.git.checkout(repoPath, name)
+    if (r?.ok) { setBranchSwitcherOpen(false); refresh() }
+    else toast.error(r?.stderr ?? 'Checkout failed')
+  }
+
+  function sanitizeBranchName(name: string): string {
+    return name
+      .replace(/\s+/g, '-')          // spaces → hyphens
+      .replace(/[~^:?*\[\\]/g, '-')  // git-forbidden chars → hyphens
+      .replace(/\.{2,}/g, '-')       // consecutive dots → hyphen
+      .replace(/^[./]+/, '')         // no leading dot or slash
+      .replace(/[./]+$/, '')         // no trailing dot or slash
+      .replace(/-{2,}/g, '-')        // collapse consecutive hyphens
+      .toLowerCase()
+  }
+
+  async function handleCreateBranch() {
+    if (!repoPath || !newBranchName.trim()) return
+    const r = await window.electronAPI?.git.checkout(repoPath, newBranchName.trim(), true)
+    if (r?.ok) { setNewBranchName(''); setCreatingBranch(false); setBranchSwitcherOpen(false); refresh() }
+    else toast.error(r?.stderr ?? 'Failed to create branch')
+  }
+
+  async function handleDeleteBranch(name: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!repoPath) return
+    if (name === branch) { toast.error("Can't delete current branch"); return }
+    const r = await window.electronAPI?.git.deleteBranch(repoPath, name)
+    if (r?.ok) { toast.success(`Deleted ${name}`); loadBranches(repoPath) }
+    else toast.error(r?.stderr ?? 'Delete failed')
+  }
 
   async function handleOpenRepo() {
     const path = await window.electronAPI?.git.openDialog()
@@ -253,29 +320,30 @@ export default function Home() {
             </button>
             {repoSwitcherOpen && (
               <div className="fixed top-9 left-24 w-72 bg-popover border border-border rounded-lg shadow-xl z-50 overflow-hidden">
-                {recentRepos.length > 0 && (
-                  <>
-                    <div className="px-3 py-1.5 border-b border-border">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Recent</p>
-                    </div>
-                    {recentRepos.slice(0, 8).map(r => (
-                      <div
-                        key={r.path}
-                        onClick={() => { if (r.exists) { openRepo(r.path); setRepoSwitcherOpen(false) } }}
-                        className={`flex items-center gap-2.5 px-3 py-2 group border-b border-border/50 ${r.exists ? 'cursor-pointer hover:bg-secondary/50' : 'opacity-40 cursor-not-allowed'} ${r.path === repoPath ? 'bg-accent/10' : ''}`}
-                      >
-                        <GitBranch className={`h-3.5 w-3.5 shrink-0 ${r.path === repoPath ? 'text-accent' : 'text-muted-foreground'}`} />
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-xs font-medium truncate ${r.path === repoPath ? 'text-accent' : 'text-foreground'}`}>{r.name}</p>
-                          <p className="text-[10px] text-muted-foreground truncate">{r.path}</p>
-                        </div>
-                        <button onClick={(e) => handleRemoveRecent(r.path, e)} className="opacity-0 group-hover:opacity-100 text-muted-foreground/40 hover:text-destructive transition-all shrink-0 p-0.5">
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </>
+                <div className="px-3 py-1.5 border-b border-border">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Recent</p>
+                </div>
+                {recentRepos.length === 0 && (
+                  <div className="px-3 py-2 border-b border-border/50">
+                    <p className="text-xs text-muted-foreground/50">No recent repositories</p>
+                  </div>
                 )}
+                {recentRepos.slice(0, 8).map(r => (
+                  <div
+                    key={r.path}
+                    onClick={() => { if (r.exists) { openRepo(r.path); setRepoSwitcherOpen(false) } }}
+                    className={`flex items-center gap-2.5 px-3 py-2 group border-b border-border/50 ${r.exists ? 'cursor-pointer hover:bg-secondary/50' : 'opacity-40 cursor-not-allowed'} ${r.path === repoPath ? 'bg-accent/10' : ''}`}
+                  >
+                    <GitBranch className={`h-3.5 w-3.5 shrink-0 ${r.path === repoPath ? 'text-accent' : 'text-muted-foreground'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-medium truncate ${r.path === repoPath ? 'text-accent' : 'text-foreground'}`}>{r.name}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{r.path}</p>
+                    </div>
+                    <button onClick={(e) => handleRemoveRecent(r.path, e)} className="opacity-0 group-hover:opacity-100 text-muted-foreground/40 hover:text-destructive transition-all shrink-0 p-0.5">
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
                 <div className="p-1">
                   <button onClick={handleOpenRepo} className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors">
                     <FolderOpen className="h-3.5 w-3.5" />Open repository…
@@ -292,32 +360,132 @@ export default function Home() {
           </div>
 
           {branch && (
-            <div className="flex items-center gap-1 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <GitBranch className="h-3 w-3 text-accent shrink-0" />
-              <span className="text-xs text-accent font-medium truncate max-w-[120px]">{branch}</span>
-              {aheadBy > 0 && (
-                <span className="flex items-center gap-0.5 text-xs text-muted-foreground">
-                  <ArrowUp className="h-2.5 w-2.5" />{aheadBy}
-                </span>
-              )}
-              {behindBy > 0 && (
-                <span className="flex items-center gap-0.5 text-xs text-muted-foreground">
-                  <ArrowDown className="h-2.5 w-2.5" />{behindBy}
-                </span>
-              )}
+            <div ref={branchSwitcherRef} className="relative flex items-center shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              <button
+                onClick={() => setBranchSwitcherOpen(o => !o)}
+                className="flex items-center gap-1.5 px-2 h-6 rounded text-accent hover:bg-secondary transition-colors"
+              >
+                <GitBranch className="h-3 w-3 shrink-0" />
+                <span className="text-xs font-medium max-w-[120px] truncate">{branch}</span>
+                {aheadBy > 0 && <span className="flex items-center gap-0.5 text-xs text-muted-foreground"><ArrowUp className="h-2.5 w-2.5" />{aheadBy}</span>}
+                {behindBy > 0 && <span className="flex items-center gap-0.5 text-xs text-muted-foreground"><ArrowDown className="h-2.5 w-2.5" />{behindBy}</span>}
+                <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </button>
+              {branchSwitcherOpen && (() => {
+                const localBranches = branches.filter(b => !b.name.startsWith('remotes/'))
+                return (
+                  <div className="fixed top-9 w-64 bg-popover border border-border rounded-lg shadow-xl z-50 overflow-hidden" style={{ left: branchSwitcherRef.current ? branchSwitcherRef.current.getBoundingClientRect().left : 0 }}>
+                    {localBranches.length > 0 && (
+                      <>
+                        <div className="px-3 py-1.5 border-b border-border">
+                          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Branches</p>
+                        </div>
+                        {localBranches.map(b => (
+                          <div
+                            key={b.name}
+                            onClick={() => handleCheckoutBranch(b.name)}
+                            className={`flex items-center gap-2.5 px-3 py-2 group border-b border-border/50 cursor-pointer transition-colors ${b.current ? 'bg-accent/10' : 'hover:bg-secondary/50'}`}
+                          >
+                            <GitBranch className={`h-3.5 w-3.5 shrink-0 ${b.current ? 'text-accent' : 'text-muted-foreground'}`} />
+                            <span className={`text-xs font-medium truncate flex-1 ${b.current ? 'text-accent' : 'text-foreground'}`}>{b.name}</span>
+                            {!b.current && (
+                              <button
+                                onClick={(e) => handleDeleteBranch(b.name, e)}
+                                className="opacity-0 group-hover:opacity-100 text-muted-foreground/40 hover:text-destructive transition-all shrink-0 p-0.5"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {localBranches.length === 0 && (
+                      <div className="px-3 py-2 border-b border-border/50">
+                        <p className="text-xs text-muted-foreground/50">No branches</p>
+                      </div>
+                    )}
+                    <div className="p-1">
+                      {creatingBranch ? (
+                        <input
+                          autoFocus
+                          value={newBranchName}
+                          onChange={e => setNewBranchName(sanitizeBranchName(e.target.value))}
+                          onKeyDown={e => { if (e.key === 'Enter') handleCreateBranch(); if (e.key === 'Escape') setCreatingBranch(false) }}
+                          placeholder="New branch name…"
+                          className="w-full h-7 px-2 rounded text-xs bg-input border border-border outline-none focus:border-accent/50 text-foreground placeholder:text-muted-foreground/50"
+                        />
+                      ) : (
+                        <button onClick={() => setCreatingBranch(true)} className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors">
+                          <Plus className="h-3.5 w-3.5" />New branch…
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          )}
+          {/* Nav tabs */}
+          {repoPath && (
+            <div className="flex items-stretch ml-2 shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              <div className="w-px h-3.5 bg-border mx-1 shrink-0 self-center" />
+              <button
+                onClick={() => setActiveView('changes')}
+                className={`flex items-center gap-1.5 px-3 h-full text-xs font-medium transition-colors border-b-2 ${activeView === 'changes' ? 'border-accent text-accent' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+              >
+                <GitCommitHorizontal className="h-3.5 w-3.5" />
+                Changes
+              </button>
+              <div className="w-px h-3.5 bg-border mx-1 shrink-0 self-center" />
+              <button
+                onClick={() => setActiveView('history')}
+                className={`flex items-center gap-1.5 px-3 h-full text-xs font-medium transition-colors border-b-2 ${activeView === 'history' ? 'border-accent text-accent' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+              >
+                <History className="h-3.5 w-3.5" />
+                History
+              </button>
+              <div className="w-px h-3.5 bg-border mx-1 shrink-0 self-center" />
+              <button
+                onClick={() => setActiveView('pull-requests')}
+                className={`flex items-center gap-1.5 px-3 h-full text-xs font-medium transition-colors border-b-2 ${activeView === 'pull-requests' ? 'border-accent text-accent' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+              >
+                Pull Requests
+              </button>
+              <div className="w-px h-3.5 bg-border mx-1 shrink-0 self-center" />
+              <button
+                onClick={() => setActiveView('actions')}
+                className={`flex items-center gap-1.5 px-3 h-full text-xs font-medium transition-colors border-b-2 ${activeView === 'actions' ? 'border-accent text-accent' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+              >
+                Actions
+              </button>
             </div>
           )}
         </div>
         <div className="flex items-stretch shrink-0" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {repoPath && (
-            <button
-              onClick={handleFetch}
-              title="Fetch"
-              className="flex items-center justify-center h-full px-3 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-              tabIndex={-1}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="flex items-stretch">
+              <button
+                onClick={handleFetch}
+                title="Fetch"
+                className="flex items-center justify-center h-full px-3 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                tabIndex={-1}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                onClick={() => setAutoFetch(v => !v)}
+                title={autoFetch ? 'Auto-fetch on (every 15s) — click to disable' : 'Auto-fetch off — click to enable'}
+                className={`flex items-center justify-center h-full px-2 text-xs font-medium transition-colors border-l border-border ${
+                  autoFetch
+                    ? 'text-accent hover:text-accent/80 hover:bg-secondary'
+                    : 'text-muted-foreground/50 hover:text-muted-foreground hover:bg-secondary'
+                }`}
+                tabIndex={-1}
+              >
+                Auto
+              </button>
+            </div>
           )}
 
           {/* GitHub profile */}
@@ -409,17 +577,10 @@ export default function Home() {
           />
         ) : repoPath ? (
           <>
-            <Sidebar
-              repoPath={repoPath}
-              activeView={activeView}
-              onViewChange={setActiveView}
-              onOpenRepo={openRepo}
-              refreshKey={refreshKey}
-              onRefresh={refresh}
-            />
             <MainPanel
               repoPath={repoPath}
               repoName={repoName}
+              repoUrl={repoUrl}
               activeView={activeView}
               refreshKey={refreshKey}
               onRefresh={refresh}
@@ -427,6 +588,7 @@ export default function Home() {
               aheadBy={aheadBy}
               behindBy={behindBy}
               githubAccount={githubUser}
+              branches={branches}
             />
             <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
           </>

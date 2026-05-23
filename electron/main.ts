@@ -356,7 +356,7 @@ app.on('ready', () => {
   // ── Push / pull / fetch ──────────────────────────────────────────────────
 
   ipcMain.handle('git:push', async (_e, { repoPath, remote, branch }: { repoPath: string; remote: string; branch: string }) => {
-    const r = await git(['push', remote, branch], repoPath)
+    const r = await git(['push', '--set-upstream', remote, branch], repoPath)
     return { ok: r.code === 0, stderr: r.stderr }
   })
 
@@ -698,6 +698,286 @@ app.on('ready', () => {
 
   ipcMain.handle('shell:open-path', (_e, p: string) => shell.openPath(p))
   ipcMain.handle('shell:show-item', (_e, p: string) => shell.showItemInFolder(p))
+
+  // ── GitHub PR handlers ────────────────────────────────────────────────────
+
+  // github:list-prs — list PRs for a repo
+  ipcMain.handle('github:list-prs', async (_e, { token, repoUrl, state }: { token: string; repoUrl: string; state: 'open' | 'closed' | 'all' }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, prs: [] }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls?state=${state}&per_page=50&sort=updated`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, prs: [], error: `GitHub ${res.status}` }
+      const data = await res.json() as any[]
+      const prs = data.map(pr => ({
+        number: pr.number,
+        title: pr.title,
+        body: pr.body ?? '',
+        state: pr.state,
+        draft: pr.draft,
+        merged: pr.pull_request?.merged_at != null || pr.merged_at != null,
+        author: { login: pr.user.login, avatarUrl: pr.user.avatar_url },
+        head: { ref: pr.head.ref, sha: pr.head.sha },
+        base: { ref: pr.base.ref },
+        createdAt: pr.created_at,
+        updatedAt: pr.updated_at,
+        labels: (pr.labels ?? []).map((l: any) => ({ name: l.name, color: l.color })),
+        reviewDecision: pr.requested_reviewers?.length > 0 ? 'review_required' : null,
+        checks: null as null,
+        comments: pr.comments ?? 0,
+        htmlUrl: pr.html_url,
+        mergeable: pr.mergeable,
+      }))
+      return { ok: true, prs }
+    } catch (e: any) { return { ok: false, prs: [], error: e.message } }
+  })
+
+  // github:get-pr — single PR detail with checks
+  ipcMain.handle('github:get-pr', async (_e, { token, repoUrl, number }: { token: string; repoUrl: string; number: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const [prRes, checksRes] = await Promise.all([
+        fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }),
+        fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}/reviews`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }),
+      ])
+      const pr = await prRes.json() as any
+      const reviews = checksRes.ok ? await checksRes.json() as any[] : []
+      // get status checks
+      const statusRes = await fetch(`https://api.github.com/repos/${m[1]}/commits/${pr.head.sha}/check-runs`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } })
+      const statusData = statusRes.ok ? await statusRes.json() as any : { check_runs: [] }
+      return {
+        ok: true,
+        pr: {
+          number: pr.number,
+          title: pr.title,
+          body: pr.body ?? '',
+          state: pr.state,
+          draft: pr.draft,
+          merged: pr.merged,
+          mergedAt: pr.merged_at,
+          mergeable: pr.mergeable,
+          mergeableState: pr.mergeable_state,
+          author: { login: pr.user.login, avatarUrl: pr.user.avatar_url },
+          head: { ref: pr.head.ref, sha: pr.head.sha, repoCloneUrl: pr.head.repo?.clone_url },
+          base: { ref: pr.base.ref },
+          createdAt: pr.created_at,
+          updatedAt: pr.updated_at,
+          labels: (pr.labels ?? []).map((l: any) => ({ name: l.name, color: l.color })),
+          comments: pr.comments ?? 0,
+          htmlUrl: pr.html_url,
+          reviews: reviews.map((r: any) => ({ author: r.user.login, state: r.state, submittedAt: r.submitted_at })),
+          checkRuns: (statusData.check_runs ?? []).map((c: any) => ({ name: c.name, status: c.status, conclusion: c.conclusion, htmlUrl: c.html_url })),
+        }
+      }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:get-pr-diff — PR file changes
+  ipcMain.handle('github:get-pr-diff', async (_e, { token, repoUrl, number }: { token: string; repoUrl: string; number: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, files: [] }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}/files?per_page=100`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, files: [] }
+      const data = await res.json() as any[]
+      const files = data.map((f: any) => ({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions,
+        deletions: f.deletions,
+        patch: f.patch ?? '',
+      }))
+      return { ok: true, files }
+    } catch (e: any) { return { ok: false, files: [], error: e.message } }
+  })
+
+  // github:get-pr-comments — PR comments
+  ipcMain.handle('github:get-pr-comments', async (_e, { token, repoUrl, number }: { token: string; repoUrl: string; number: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, comments: [] }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/issues/${number}/comments?per_page=100`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, comments: [] }
+      const data = await res.json() as any[]
+      const comments = data.map((c: any) => ({
+        id: c.id,
+        author: { login: c.user.login, avatarUrl: c.user.avatar_url },
+        body: c.body,
+        createdAt: c.created_at,
+      }))
+      return { ok: true, comments }
+    } catch (e: any) { return { ok: false, comments: [], error: e.message } }
+  })
+
+  // github:add-comment
+  ipcMain.handle('github:add-comment', async (_e, { token, repoUrl, number, body }: { token: string; repoUrl: string; number: number; body: string }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/issues/${number}/comments`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      })
+      return { ok: res.ok }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:create-pr
+  ipcMain.handle('github:create-pr', async (_e, { token, repoUrl, title, body, head, base, draft }: { token: string; repoUrl: string; title: string; body: string; head: string; base: string; draft: boolean }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, head, base, draft }),
+      })
+      const data = await res.json() as any
+      if (!res.ok) return { ok: false, error: data.message ?? 'Failed to create PR' }
+      return { ok: true, number: data.number, htmlUrl: data.html_url }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:merge-pr
+  ipcMain.handle('github:merge-pr', async (_e, { token, repoUrl, number, method }: { token: string; repoUrl: string; number: number; method: 'merge' | 'squash' | 'rebase' }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}/merge`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ merge_method: method }),
+      })
+      return { ok: res.ok, status: res.status }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:close-pr
+  ipcMain.handle('github:close-pr', async (_e, { token, repoUrl, number }: { token: string; repoUrl: string; number: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'closed' }),
+      })
+      return { ok: res.ok }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:reopen-pr
+  ipcMain.handle('github:reopen-pr', async (_e, { token, repoUrl, number }: { token: string; repoUrl: string; number: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/pulls/${number}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: 'open' }),
+      })
+      return { ok: res.ok }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:list-workflow-runs — recent runs for the repo (optionally filtered by branch)
+  ipcMain.handle('github:list-workflow-runs', async (_e, { token, repoUrl, branch }: { token: string; repoUrl: string; branch?: string }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, runs: [] }
+      const branchParam = branch ? `&branch=${encodeURIComponent(branch)}` : ''
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/actions/runs?per_page=30${branchParam}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, runs: [], error: `GitHub ${res.status}` }
+      const data = await res.json() as any
+      const runs = (data.workflow_runs ?? []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        displayTitle: r.display_title,
+        status: r.status,
+        conclusion: r.conclusion,
+        event: r.event,
+        branch: r.head_branch,
+        sha: r.head_sha,
+        commitMessage: r.head_commit?.message ?? '',
+        actor: { login: r.actor?.login ?? '', avatarUrl: r.actor?.avatar_url ?? '' },
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        runNumber: r.run_number,
+        htmlUrl: r.html_url,
+        workflowId: r.workflow_id,
+      }))
+      return { ok: true, runs }
+    } catch (e: any) { return { ok: false, runs: [], error: e.message } }
+  })
+
+  // github:get-workflow-run-jobs — jobs + steps for a single run
+  ipcMain.handle('github:get-workflow-run-jobs', async (_e, { token, repoUrl, runId }: { token: string; repoUrl: string; runId: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, jobs: [] }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/actions/runs/${runId}/jobs?per_page=100`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, jobs: [] }
+      const data = await res.json() as any
+      const jobs = (data.jobs ?? []).map((j: any) => ({
+        id: j.id,
+        name: j.name,
+        status: j.status,
+        conclusion: j.conclusion,
+        startedAt: j.started_at,
+        completedAt: j.completed_at,
+        htmlUrl: j.html_url,
+        steps: (j.steps ?? []).map((s: any) => ({
+          name: s.name,
+          status: s.status,
+          conclusion: s.conclusion,
+          number: s.number,
+          startedAt: s.started_at ?? null,
+          completedAt: s.completed_at ?? null,
+        })),
+      }))
+      return { ok: true, jobs }
+    } catch (e: any) { return { ok: false, jobs: [], error: e.message } }
+  })
+
+  // github:rerun-workflow — re-run a failed workflow run
+  ipcMain.handle('github:rerun-workflow', async (_e, { token, repoUrl, runId }: { token: string; repoUrl: string; runId: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false }
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/actions/runs/${runId}/rerun`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      return { ok: res.ok || res.status === 201 }
+    } catch (e: any) { return { ok: false, error: e.message } }
+  })
+
+  // github:get-job-logs — fetch raw log text for a single job
+  ipcMain.handle('github:get-job-logs', async (_e, { token, repoUrl, jobId }: { token: string; repoUrl: string; jobId: number }) => {
+    try {
+      const m = repoUrl.match(/github\.com[:/](.+?)(?:\.git)?$/)
+      if (!m) return { ok: false, logs: '' }
+      // GitHub responds with 302 → pre-signed S3 URL; fetch follows redirects by default
+      const res = await fetch(`https://api.github.com/repos/${m[1]}/actions/jobs/${jobId}/logs`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      })
+      if (!res.ok) return { ok: false, logs: '', error: `GitHub ${res.status}` }
+      const logs = await res.text()
+      return { ok: true, logs }
+    } catch (e: any) { return { ok: false, logs: '', error: e.message } }
+  })
 })
 
 app.on('window-all-closed', () => {
